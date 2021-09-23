@@ -18,6 +18,11 @@ type StorageInMemory struct {
 	m sync.Map
 }
 
+type balance struct {
+	mu     sync.Mutex
+	amount storage.AccountBalance
+}
+
 // New returns a StorageInMemory.
 func New() *StorageInMemory {
 	return &StorageInMemory{
@@ -26,44 +31,58 @@ func New() *StorageInMemory {
 }
 
 // Set sets a new account with balance.
-func (s *StorageInMemory) Set(account storage.AccountID, balance storage.AccountBalance) error {
+func (s *StorageInMemory) Set(account storage.AccountID, amount storage.AccountBalance) error {
 	if account == "" {
 		return ErrAccNameInvalid
 	}
-	s.m.Store(account, balance)
+	body := &balance{
+		mu:     sync.Mutex{},
+		amount: amount,
+	}
+	s.m.Store(account, body)
 	return nil
 }
 
 // Get reads a balance of account.
 func (s *StorageInMemory) Get(account storage.AccountID) (storage.AccountBalance, error) {
-	balance, ok := s.m.Load(account)
-	if !ok {
-		return 0, ErrAccIsAbsent
+	balance, err := s.getBalance(account)
+	if err != nil {
+		return 0, err
 	}
-	return balance.(storage.AccountBalance), nil
+	return balance.amount, nil
+}
+
+func (s *StorageInMemory) getBalance(account storage.AccountID) (*balance, error) {
+	body, ok := s.m.Load(account)
+	if !ok {
+		return nil, ErrAccIsAbsent
+	}
+	return body.(*balance), nil
 }
 
 // Transfer ransfers money from accountFrom to accountTo using the amount.
 func (s *StorageInMemory) Transfer(accountFrom, accountTo storage.AccountID, amountToTransfer storage.AccountBalance) error {
-	balanceForAccountFrom, err := s.Get(accountFrom)
+	balanceFrom, err := s.getBalance(accountFrom)
 	if err != nil {
 		return err
 	}
-	balanceForAccountTo, err := s.Get(accountTo)
+	balanceTo, err := s.getBalance(accountTo)
 	if err != nil {
 		return err
 	}
-	if balanceForAccountFrom < amountToTransfer {
+
+	balanceFrom.mu.Lock()
+	balanceTo.mu.Lock()
+	defer balanceFrom.mu.Unlock()
+	defer balanceTo.mu.Unlock()
+
+	if balanceFrom.amount < amountToTransfer {
 		return ErrNotEnoughBalance
 	}
-	err = s.Set(accountFrom, balanceForAccountFrom-amountToTransfer)
-	if err != nil {
-		return err
-	}
-	err = s.Set(accountTo, balanceForAccountTo+amountToTransfer)
-	if err != nil {
-		return err
-	}
+	// todo del (для отладки)
+	// fmt.Println("операция: ", balanceFrom.amount, balanceTo.amount, balanceFrom.amount+balanceTo.amount)
+	balanceFrom.amount -= amountToTransfer
+	balanceTo.amount += amountToTransfer
 	return nil
 }
 
@@ -71,7 +90,7 @@ func (s *StorageInMemory) Transfer(accountFrom, accountTo storage.AccountID, amo
 func (s *StorageInMemory) Print() {
 	mapToPrint := map[string]interface{}{}
 	s.m.Range(func(key, value interface{}) bool {
-		mapToPrint[fmt.Sprint(key)] = value
+		mapToPrint[fmt.Sprint(key)] = value.(*balance).amount
 		return true
 	})
 	fmt.Println("Текущее состояние счетов: ", mapToPrint)
